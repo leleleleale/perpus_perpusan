@@ -18,6 +18,8 @@ def init_db():
     conn = get_connection()
     c = conn.cursor()
 
+    # Siswa: NIS/kelas/jenjang sekarang opsional (bisa null)
+    # auto_registered = 1 berarti siswa daftar sendiri lewat login
     c.executescript("""
         CREATE TABLE IF NOT EXISTS admin (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -29,11 +31,12 @@ def init_db():
 
         CREATE TABLE IF NOT EXISTS siswa (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
-            nis TEXT UNIQUE NOT NULL,
+            nis TEXT,
             nama TEXT NOT NULL,
-            kelas TEXT NOT NULL,
-            jenjang TEXT NOT NULL,
+            kelas TEXT DEFAULT '-',
+            jenjang TEXT DEFAULT '-',
             telepon TEXT,
+            auto_registered INTEGER DEFAULT 0,
             created_at TEXT DEFAULT (datetime('now','localtime'))
         );
 
@@ -68,9 +71,45 @@ def init_db():
         );
     """)
 
+    # Migrasi DB lama: tambah kolom auto_registered jika belum ada
+    cols_info = c.execute("PRAGMA table_info(siswa)").fetchall()
+    cols = [row[1] for row in cols_info]
+    if "auto_registered" not in cols:
+        c.execute("ALTER TABLE siswa ADD COLUMN auto_registered INTEGER DEFAULT 0")
+
+    # Migrasi DB lama: kolom 'nis' mungkin masih NOT NULL (skema versi awal).
+    # SQLite tidak bisa ALTER COLUMN langsung, jadi rebuild tabel siswa.
+    nis_col = next((row for row in cols_info if row[1] == "nis"), None)
+    if nis_col is not None and nis_col[3] == 1:  # notnull == 1 berarti masih NOT NULL
+        c.executescript("""
+            ALTER TABLE siswa RENAME TO siswa_old;
+
+            CREATE TABLE siswa (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                nis TEXT,
+                nama TEXT NOT NULL,
+                kelas TEXT DEFAULT '-',
+                jenjang TEXT DEFAULT '-',
+                telepon TEXT,
+                auto_registered INTEGER DEFAULT 0,
+                created_at TEXT DEFAULT (datetime('now','localtime'))
+            );
+
+            INSERT INTO siswa (id, nis, nama, kelas, jenjang, telepon, auto_registered, created_at)
+            SELECT id, nis, nama, kelas, jenjang, telepon,
+                   COALESCE(auto_registered, 0), created_at
+            FROM siswa_old;
+
+            DROP TABLE siswa_old;
+        """)
+
+    # Migrasi: pastikan kolom dipinjam_oleh ada di peminjaman (untuk versi web sinkron, opsional)
+    pem_cols = [row[1] for row in c.execute("PRAGMA table_info(peminjaman)").fetchall()]
+    if "dipinjam_oleh" not in pem_cols:
+        c.execute("ALTER TABLE peminjaman ADD COLUMN dipinjam_oleh TEXT DEFAULT 'admin'")
+
     # Seed admin default
-    admin_exists = c.execute("SELECT id FROM admin WHERE username = 'admin'").fetchone()
-    if not admin_exists:
+    if not c.execute("SELECT id FROM admin WHERE username = 'admin'").fetchone():
         pw = hashlib.sha256("admin123".encode()).hexdigest()
         c.execute("INSERT INTO admin (username, password, nama) VALUES (?, ?, ?)",
                   ("admin", pw, "Administrator"))
@@ -130,15 +169,43 @@ class AdminModel:
 
 class SiswaModel:
     JENJANG = {
-        "SD": [f"Kelas {i}" for i in range(1, 7)],
+        "SD":  [f"Kelas {i}" for i in range(1, 7)],
         "SMP": [f"Kelas {i}" for i in range(7, 10)],
         "SMA": [f"Kelas {i}" for i in range(10, 13)],
     }
 
     @staticmethod
+    def login_atau_daftar(nama):
+        """
+        Cari siswa berdasarkan nama (case-insensitive).
+        - Jika sudah ada → kembalikan data siswa tersebut (langsung masuk).
+        - Jika belum ada → auto-register dengan nama itu, lalu kembalikan data baru.
+        Mengembalikan (siswa_dict, is_new: bool)
+        """
+        conn = get_connection()
+        rows = conn.execute(
+            "SELECT * FROM siswa WHERE LOWER(TRIM(nama)) = LOWER(TRIM(?))",
+            (nama,)
+        ).fetchall()
+
+        if rows:
+            # Sudah terdaftar — jika lebih dari satu nama sama, kembalikan semua
+            conn.close()
+            return [dict(r) for r in rows], False
+        else:
+            # Belum ada → daftar otomatis
+            cur = conn.execute(
+                "INSERT INTO siswa (nama, nis, kelas, jenjang, auto_registered) VALUES (?, NULL, '-', '-', 1)",
+                (nama.strip(),)
+            )
+            conn.commit()
+            siswa_id = cur.lastrowid
+            row = conn.execute("SELECT * FROM siswa WHERE id=?", (siswa_id,)).fetchone()
+            conn.close()
+            return [dict(row)], True
+
+    @staticmethod
     def login_by_nama(nama):
-        """Cari siswa berdasarkan nama (case-insensitive, trim). 
-        Kembalikan list siswa yang cocok (bisa >1 jika nama sama)."""
         conn = get_connection()
         rows = conn.execute(
             "SELECT * FROM siswa WHERE LOWER(TRIM(nama)) = LOWER(TRIM(?))",
@@ -151,11 +218,11 @@ class SiswaModel:
     def get_all(search=""):
         conn = get_connection()
         query = """
-            SELECT s.*, 
+            SELECT s.*,
                    COUNT(CASE WHEN p.status='dipinjam' THEN 1 END) as pinjam_aktif
             FROM siswa s
             LEFT JOIN peminjaman p ON s.id = p.siswa_id
-            WHERE s.nama LIKE ? OR s.nis LIKE ?
+            WHERE s.nama LIKE ? OR COALESCE(s.nis,'') LIKE ?
             GROUP BY s.id
             ORDER BY s.nama
         """
@@ -172,11 +239,12 @@ class SiswaModel:
 
     @staticmethod
     def add(nis, nama, kelas, jenjang, telepon=""):
+        """Tambah siswa manual oleh admin (NIS tetap opsional)."""
         conn = get_connection()
         try:
             conn.execute(
-                "INSERT INTO siswa (nis, nama, kelas, jenjang, telepon) VALUES (?,?,?,?,?)",
-                (nis, nama, kelas, jenjang, telepon)
+                "INSERT INTO siswa (nis, nama, kelas, jenjang, telepon, auto_registered) VALUES (?,?,?,?,?,0)",
+                (nis or None, nama, kelas, jenjang, telepon)
             )
             conn.commit()
             return True, "Siswa berhasil ditambahkan"
@@ -191,7 +259,7 @@ class SiswaModel:
         try:
             conn.execute(
                 "UPDATE siswa SET nis=?, nama=?, kelas=?, jenjang=?, telepon=? WHERE id=?",
-                (nis, nama, kelas, jenjang, telepon, siswa_id)
+                (nis or None, nama, kelas, jenjang, telepon, siswa_id)
             )
             conn.commit()
             return True, "Data siswa berhasil diperbarui"
@@ -219,13 +287,13 @@ class SiswaModel:
 class BukuModel:
     JENJANG = ["SD", "SMP", "SMA"]
     KELAS_MAP = {
-        "SD": [str(i) for i in range(1, 7)],
+        "SD":  [str(i) for i in range(1, 7)],
         "SMP": [str(i) for i in range(7, 10)],
         "SMA": [str(i) for i in range(10, 13)],
     }
     MAPEL_MAP = {
-        "SD": ["Bahasa Indonesia", "Matematika", "IPA", "IPS", "PKn", "Agama",
-               "PJOK", "SBdP", "Bahasa Inggris", "Tematik"],
+        "SD":  ["Bahasa Indonesia", "Matematika", "IPA", "IPS", "PKn", "Agama",
+                "PJOK", "SBdP", "Bahasa Inggris", "Tematik"],
         "SMP": ["Bahasa Indonesia", "Matematika", "IPA", "IPS", "PKn",
                 "Bahasa Inggris", "Agama", "PJOK", "Seni Budaya", "Prakarya", "BK"],
         "SMA": ["Bahasa Indonesia", "Matematika", "Fisika", "Kimia", "Biologi",
@@ -267,7 +335,7 @@ class BukuModel:
         conn = get_connection()
         try:
             conn.execute(
-                """INSERT INTO buku 
+                """INSERT INTO buku
                    (isbn, judul, pengarang, penerbit, tahun_terbit, jenjang, kelas, mata_pelajaran, stok, stok_tersedia)
                    VALUES (?,?,?,?,?,?,?,?,?,?)""",
                 (isbn, judul, pengarang, penerbit, tahun, jenjang, kelas, mapel, stok, stok)
@@ -336,7 +404,7 @@ class PeminjamanModel:
         """
         params = []
         if search:
-            query += " AND (s.nama LIKE ? OR s.nis LIKE ? OR b.judul LIKE ?)"
+            query += " AND (s.nama LIKE ? OR COALESCE(s.nis,'') LIKE ? OR b.judul LIKE ?)"
             params += [f"%{search}%", f"%{search}%", f"%{search}%"]
         if status:
             query += " AND p.status=?"
@@ -358,7 +426,7 @@ class PeminjamanModel:
         return [dict(r) for r in rows]
 
     @staticmethod
-    def pinjam(siswa_id, buku_id, admin_id):
+    def pinjam(siswa_id, buku_id, admin_id=None):
         conn = get_connection()
         buku = conn.execute("SELECT stok_tersedia FROM buku WHERE id=?", (buku_id,)).fetchone()
         if not buku or buku["stok_tersedia"] < 1:
@@ -434,6 +502,9 @@ class LaporanModel:
         stats["total_buku"] = conn.execute("SELECT COUNT(*) FROM buku").fetchone()[0]
         stats["total_judul"] = conn.execute("SELECT COUNT(DISTINCT judul) FROM buku").fetchone()[0]
         stats["total_siswa"] = conn.execute("SELECT COUNT(*) FROM siswa").fetchone()[0]
+        stats["total_siswa_mandiri"] = conn.execute(
+            "SELECT COUNT(*) FROM siswa WHERE auto_registered=1"
+        ).fetchone()[0]
         stats["total_pinjam_aktif"] = conn.execute(
             "SELECT COUNT(*) FROM peminjaman WHERE status='dipinjam'"
         ).fetchone()[0]

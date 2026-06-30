@@ -67,8 +67,14 @@ class SiswaDashboard:
                  font=("Segoe UI", 10, "bold"),
                  bg=COLORS["sidebar"], fg="#FFFFFF",
                  anchor="w", padx=16, wraplength=190).pack(fill="x")
-        tk.Label(info,
-                 text=f"   {self.siswa['jenjang']} {self.siswa['kelas']}  |  NIS: {self.siswa['nis']}",
+        jenjang = self.siswa.get('jenjang') or '-'
+        kelas = self.siswa.get('kelas') or '-'
+        nis = self.siswa.get('nis') or 'belum dilengkapi'
+        if jenjang == '-' and kelas == '-':
+            info_text = f"   NIS: {nis}"
+        else:
+            info_text = f"   {jenjang} {kelas}  |  NIS: {nis}"
+        tk.Label(info, text=info_text,
                  font=FONT_SMALL, bg=COLORS["sidebar"],
                  fg=COLORS["sidebar_txt"], anchor="w", padx=16).pack(fill="x")
 

@@ -35,9 +35,10 @@ class SiswaPage:
                    self._open_history, kind="warning").pack(side="right", padx=(0, 8))
 
         cols = ["ID", "NIS", "Nama", "Jenjang", "Kelas", "Telepon",
-                "Pinjam Aktif", "Terdaftar"]
+                "Pinjam Aktif", "Sumber", "Terdaftar"]
         widths = {"ID": 40, "NIS": 100, "Nama": 200, "Jenjang": 70,
-                  "Kelas": 60, "Telepon": 120, "Pinjam Aktif": 90, "Terdaftar": 120}
+                  "Kelas": 60, "Telepon": 110, "Pinjam Aktif": 90,
+                  "Sumber": 100, "Terdaftar": 110}
 
         frame, self.tree = build_treeview(self.parent, cols, widths, height=24)
         frame.pack(fill="both", expand=True, padx=20, pady=(0, 10))
@@ -55,10 +56,18 @@ class SiswaPage:
             tag = "alt" if i % 2 else ""
             if s.get("pinjam_aktif", 0) > 0:
                 tag = "success"
+
+            is_auto = s.get("auto_registered") == 1
+            sumber = "🎒 Login sendiri" if is_auto else "🏫 Admin"
+            if is_auto:
+                tag = "warning"
+
             self.tree.insert("", "end", iid=str(s["id"]), values=(
-                s["id"], s["nis"], s["nama"], s["jenjang"], s["kelas"],
+                s["id"], s.get("nis") or "-", s["nama"],
+                s.get("jenjang") or "-", s.get("kelas") or "-",
                 s.get("telepon") or "-",
                 s.get("pinjam_aktif", 0),
+                sumber,
                 s["created_at"][:10]
             ), tags=(tag,))
 
@@ -176,12 +185,19 @@ class SiswaForm:
 
     def _populate(self):
         s = self.siswa
-        self.v_nis.set(s["nis"])
+        self.v_nis.set(s.get("nis") or "")
         self.v_nama.set(s["nama"])
         self.v_telepon.set(s.get("telepon") or "")
-        self.v_jenjang.set(s["jenjang"])
-        self._on_jenjang()
-        self.v_kelas.set(s["kelas"])
+
+        jenjang = s.get("jenjang") or ""
+        kelas = s.get("kelas") or ""
+        if jenjang in SiswaModel.JENJANG:
+            self.v_jenjang.set(jenjang)
+            self._on_jenjang()
+            if kelas in SiswaModel.JENJANG.get(jenjang, []):
+                self.v_kelas.set(kelas)
+        # Jika jenjang masih '-' (siswa auto-register), biarkan kosong
+        # supaya admin memilih sendiri saat melengkapi data.
 
     def _save(self):
         nis     = self.v_nis.get().strip()
@@ -219,8 +235,11 @@ class RiwayatSiswa:
         from models.database import PeminjamanModel
         from views.widgets import build_treeview
 
+        nis = self.siswa.get('nis') or '-'
+        jenjang = self.siswa.get('jenjang') or '-'
+        kelas = self.siswa.get('kelas') or '-'
         tk.Label(self.win,
-                 text=f"📋  {self.siswa['nama']}  |  NIS: {self.siswa['nis']}  |  {self.siswa['jenjang']} {self.siswa['kelas']}",
+                 text=f"📋  {self.siswa['nama']}  |  NIS: {nis}  |  {jenjang} {kelas}",
                  font=FONT_LABEL, bg=COLORS["bg"],
                  fg=COLORS["text"]).pack(anchor="w", padx=16, pady=(12, 6))
 

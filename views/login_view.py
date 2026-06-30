@@ -223,18 +223,17 @@ class LoginWindow:
 
 
 # ─────────────────────────────────────────────────────────────────
-# Login Siswa (nama saja, tanpa password)
+# Login Siswa (nama bebas — otomatis tersimpan jika belum ada)
 # ─────────────────────────────────────────────────────────────────
 class LoginSiswaWindow:
     def __init__(self, root, on_success, on_back=None):
         self.root = root
         self.on_success = on_success
         self.on_back = on_back
-        self._hasil = []   # list siswa yang cocok (jika >1 nama sama)
 
         root.title("Login Siswa – Perpustakaan Digital")
         root.resizable(False, False)
-        w, h = 460, 500
+        w, h = 440, 460
         sw, sh = root.winfo_screenwidth(), root.winfo_screenheight()
         root.geometry(f"{w}x{h}+{(sw-w)//2}+{(sh-h)//2}")
         root.configure(bg=COLORS["bg"])
@@ -271,13 +270,6 @@ class LoginSiswaWindow:
                                   highlightbackground=COLORS["border"],
                                   highlightcolor=COLORS["siswa_clr"])
         self.ent_nama.pack(fill="x", ipady=8, pady=(2, 6))
-        self.ent_nama.bind("<KeyRelease>", self._on_type)
-
-        # Dropdown muncul jika ada >1 hasil dengan nama yang sama
-        self.v_pilih = tk.StringVar()
-        self.cb_pilih = ttk.Combobox(inner, textvariable=self.v_pilih,
-                                      state="readonly", font=FONT_BODY)
-        # Disembunyikan dulu, muncul kalau ada ambiguitas nama
 
         self.lbl_hint = tk.Label(inner, text="",
                                   font=FONT_SMALL, bg=COLORS["card"],
@@ -299,42 +291,13 @@ class LoginSiswaWindow:
                       font=FONT_SMALL, relief="flat", cursor="hand2",
                       pady=4).pack(fill="x", pady=(8, 0))
 
-        tk.Label(inner, text="Nama harus sesuai dengan yang didaftarkan admin.",
+        tk.Label(inner,
+                 text="Belum pernah masuk? Namamu otomatis tersimpan.",
                  font=FONT_SMALL, bg=COLORS["card"],
                  fg=COLORS["text_muted"]).pack(pady=(12, 0))
 
         self.ent_nama.focus()
         self.root.bind("<Return>", lambda e: self._login())
-
-    def _on_type(self, e=None):
-        nama = self.ent_nama.get().strip()
-        if not nama:
-            self._hasil = []
-            self.cb_pilih.pack_forget()
-            self.lbl_hint.configure(text="")
-            return
-
-        self._hasil = SiswaModel.login_by_nama(nama)
-        if len(self._hasil) > 1:
-            # Tampilkan combobox pilih jika nama ganda
-            opts = [f"{s['nama']} – {s['jenjang']} {s['kelas']} (NIS: {s['nis']})"
-                    for s in self._hasil]
-            self.cb_pilih.configure(values=opts)
-            self.cb_pilih.current(0)
-            self.cb_pilih.pack(fill="x", pady=(0, 8))
-            self.lbl_hint.configure(
-                text=f"Ditemukan {len(self._hasil)} siswa dengan nama ini. Pilih yang sesuai.",
-                fg=COLORS["warning"])
-        else:
-            self.cb_pilih.pack_forget()
-            if len(self._hasil) == 1:
-                s = self._hasil[0]
-                self.lbl_hint.configure(
-                    text=f"✓  {s['jenjang']} {s['kelas']}  |  NIS: {s['nis']}",
-                    fg=COLORS["success"])
-            else:
-                self.lbl_hint.configure(text="Nama tidak ditemukan di sistem.",
-                                         fg=COLORS["danger"])
 
     def _login(self):
         nama = self.ent_nama.get().strip()
@@ -342,21 +305,71 @@ class LoginSiswaWindow:
             messagebox.showwarning("Login", "Ketik namamu terlebih dahulu!")
             return
 
-        if not self._hasil:
-            messagebox.showerror("Login Gagal",
-                                  "Namamu belum terdaftar di perpustakaan.\n"
-                                  "Minta admin untuk mendaftarkan namamu terlebih dahulu.")
+        hasil, is_new = SiswaModel.login_atau_daftar(nama)
+
+        if len(hasil) == 1:
+            siswa = hasil[0]
+            if is_new:
+                messagebox.showinfo(
+                    "Selamat Datang! 🎉",
+                    f"Halo, {siswa['nama']}!\n\n"
+                    f"Namamu baru pertama kali login, jadi otomatis\n"
+                    f"tersimpan ke daftar siswa perpustakaan."
+                )
+            self.on_success(siswa)
             return
 
-        if len(self._hasil) > 1:
-            idx = self.cb_pilih.current()
-            if idx < 0:
-                messagebox.showwarning("Pilih Akun",
-                                        "Ada beberapa siswa dengan nama yang sama.\n"
-                                        "Pilih akunmu dari daftar yang tersedia.")
-                return
-            siswa = self._hasil[idx]
-        else:
-            siswa = self._hasil[0]
+        # Lebih dari satu siswa dengan nama yang sama → minta pilih
+        self._tampilkan_pilihan(hasil)
 
+    def _tampilkan_pilihan(self, daftar_siswa):
+        win = tk.Toplevel(self.root)
+        win.title("Pilih Akun")
+        win.configure(bg=COLORS["bg"])
+        win.resizable(False, False)
+        win.grab_set()
+        w, h = 420, 360
+        sw, sh = win.winfo_screenwidth(), win.winfo_screenheight()
+        win.geometry(f"{w}x{h}+{(sw-w)//2}+{(sh-h)//2}")
+
+        inner = tk.Frame(win, bg=COLORS["card"],
+                         highlightbackground=COLORS["border"],
+                         highlightthickness=1)
+        inner.pack(fill="both", expand=True, padx=16, pady=16)
+
+        tk.Label(inner,
+                 text=f"Ditemukan {len(daftar_siswa)} siswa dengan nama yang sama.\nPilih akunmu:",
+                 font=FONT_LABEL, bg=COLORS["card"], fg=COLORS["text"],
+                 justify="left", wraplength=360).pack(anchor="w", padx=16, pady=(16, 10))
+
+        list_frame = tk.Frame(inner, bg=COLORS["card"])
+        list_frame.pack(fill="both", expand=True, padx=16)
+
+        for s in daftar_siswa:
+            info = s.get("jenjang") or "-"
+            kelas = s.get("kelas") or "-"
+            nis = s.get("nis") or "Belum ada NIS"
+            sub = f"{info} {kelas}  •  {nis}" if info != "-" else "Akun otomatis (belum dilengkapi admin)"
+
+            btn = tk.Button(
+                list_frame,
+                text=f"{s['nama']}\n{sub}",
+                font=FONT_BODY, justify="left", anchor="w",
+                bg=COLORS["bg"], fg=COLORS["text"],
+                activebackground=COLORS["siswa_clr"],
+                activeforeground="#fff",
+                relief="flat", cursor="hand2", pady=8, padx=12,
+                command=lambda sd=s: self._pilih_akun(win, sd)
+            )
+            btn.pack(fill="x", pady=3)
+
+        tk.Button(inner, text="Batal", command=win.destroy,
+                  bg=COLORS["card"], fg=COLORS["text_muted"],
+                  activebackground=COLORS["border"],
+                  font=FONT_SMALL, relief="flat", cursor="hand2",
+                  pady=6).pack(fill="x", padx=16, pady=(10, 16))
+
+    def _pilih_akun(self, win, siswa):
+        win.destroy()
         self.on_success(siswa)
+

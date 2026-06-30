@@ -45,8 +45,12 @@ class SiswaBeranda:
                  text=f"Halo, {self.siswa['nama']}! 👋",
                  font=FONT_HEAD, bg=COLORS["card"],
                  fg=COLORS["sidebar"]).pack(anchor="w")
+
+        jenjang = self.siswa.get('jenjang') or '-'
+        kelas = self.siswa.get('kelas') or '-'
+        subtitle = f"{tgl}" if jenjang == '-' else f"{jenjang} {kelas}  •  {tgl}"
         tk.Label(inner_hdr,
-                 text=f"{self.siswa['jenjang']} {self.siswa['kelas']}  •  {tgl}",
+                 text=subtitle,
                  font=FONT_SMALL, bg=COLORS["card"],
                  fg=COLORS["text_muted"]).pack(anchor="w")
 
